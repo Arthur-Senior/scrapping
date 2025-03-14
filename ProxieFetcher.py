@@ -1,3 +1,4 @@
+#By Wjatscheslaw Schezkin
 import asyncio
 import aiohttp
 import re
