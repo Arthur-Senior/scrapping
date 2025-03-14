@@ -3,49 +3,61 @@ import asyncio
 import aiohttp
 import re
 import logging
-class ProxyFetcher:
-    def __init__(self, log_level=logging.DEBUG, log_file=None):
-        if log_file:
-            logging.basicConfig(filename=log_file, level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
-        else:
-            logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.proxies = []
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+PROXY_SOURCES = [
+    "https://www.sslproxies.org/",
+    "https://free-proxy-list.net/",
+    "https://www.us-proxy.org/",
+    "https://free-proxy-list.net/uk-proxy.html",
+ 
+]
+
+class ProxyFetcher:
+    def __init__(self):
+        self.proxies = set()
         self.valid_proxies = []
 
-    async def fetch_proxies(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://www.sslproxies.org/") as response:
+    async def fetch_proxies_from_source(self, session, url):
+        try:
+            async with session.get(url) as response:
                 text = await response.text()
                 proxy_pattern = re.compile(r'(\d+\.\d+\.\d+\.\d+:\d+)')
                 matches = proxy_pattern.findall(text)
-                self.proxies = [f"http://{match}" for match in matches]
+                for match in matches:
+                    self.proxies.add(f"http://{match}")
+                logger.info(f"Fetched {len(matches)} proxies from {url}")
+        except Exception as e:
+            logger.error(f"Error fetching proxies from {url}: {e}")
 
-    async def validate_proxy(self, proxy, semaphore):
-        async with semaphore:
-            for attempt in range(3):  # Retry up to 3 times
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get("http://httpbin.org/ip", proxy=proxy, timeout=10) as response:
-                            if response.status == 200:
-                                self.logger.info(f"Valid proxy: {proxy}")
-                                return proxy
-                except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError) as e:
-                    self.logger.warning(f"Attempt {attempt + 1}: Invalid proxy: {proxy} - {e}")
-                    await asyncio.sleep(1)  
+    async def fetch_all_proxies(self):
+        async with aiohttp.ClientSession() as session:
+            tasks = [self.fetch_proxies_from_source(session, url) for url in PROXY_SOURCES]
+            await asyncio.gather(*tasks)
+
+    async def validate_proxy(self, session, proxy):
+        try:
+            async with session.get("http://httpbin.org/ip", proxy=proxy, timeout=10) as response:
+                if response.status == 200:
+                    logger.info(f"Valid proxy: {proxy}")
+                    return proxy
+        except Exception as e:
+            logger.warning(f"Invalid proxy: {proxy} - {e}")
         return None
 
-    async def get_valid_proxies(self):
-        await self.fetch_proxies()
-        semaphore = asyncio.Semaphore(10)  # Limit concurrent connections
-        tasks = [self.validate_proxy(proxy, semaphore) for proxy in self.proxies]
-        results = await asyncio.gather(*tasks)
-        self.valid_proxies = [proxy for proxy in results if proxy is not None]
+    async def validate_all_proxies(self):
+        async with aiohttp.ClientSession() as session:
+            tasks = [self.validate_proxy(session, proxy) for proxy in self.proxies]
+            results = await asyncio.gather(*tasks)
+            self.valid_proxies = [proxy for proxy in results if proxy is not None]
 
     def run(self):
-        asyncio.run(self.get_valid_proxies())
-        self.logger.info(f"Valid proxies: {self.valid_proxies}")
+        asyncio.run(self.fetch_all_proxies())
+        asyncio.run(self.validate_all_proxies())
+        logger.info(f"Total valid proxies: {len(self.valid_proxies)}")
 
 if __name__ == "__main__":
     proxy_fetcher = ProxyFetcher()
